@@ -1,0 +1,1 @@
+These scripts are to be used with a mongodb database of osm ways
