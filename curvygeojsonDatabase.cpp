@@ -28,32 +28,32 @@ using json = nlohmann::json;
 constexpr std::size_t BATCH = 5'000;
 
 int main(){
-    // std::ifstream geojson_file("10_curvy.geojson");
-    // if (!geojson_file.is_open()) {
-    //     std::cerr << "Error opening file" << std::endl;
-    //     return 1;
-    // }
+    std::ifstream geojson_file("washington_curvy.geojson");
+    if (!geojson_file.is_open()) {
+        std::cerr << "Error opening file" << std::endl;
+        return 1;
+    }
 
-    // json geojson_data;
-    // geojson_file >> geojson_data;
+    json geojson_data;
+    geojson_file >> geojson_data;
 
-    // if (!geojson_data.contains("features") || geojson_data["features"].empty()) {
-    //     std::cerr << "No features found\n";
-    //     return 1;
-    // }
-    // std::unordered_map<std::string, float> curvature_map;
-    // for (const auto& feature : geojson_data["features"]) {
-    //     if (feature.contains("properties") && feature["properties"].contains("curvature")) {
-    //         for (const auto& ways : feature["properties"]["ways"]) {
-    //             if (ways.contains("id")) {
-    //                 int  id= ways["id"];
-    //                 std::string name = "w" + std::to_string(id);
-    //                 float curvature = feature["properties"]["curvature"];
-    //                 curvature_map[name] = curvature;
-    //             }
-    //         }
-    //     }
-    // }
+    if (!geojson_data.contains("features") || geojson_data["features"].empty()) {
+        std::cerr << "No features found\n";
+        return 1;
+    }
+    std::unordered_map<std::string, double> curvature_map;
+    for (const auto& feature : geojson_data["features"]) {
+        if (feature.contains("properties") && feature["properties"].contains("curvature")) {
+            for (const auto& ways : feature["properties"]["ways"]) {
+                if (ways.contains("id")) {
+                    int  id= ways["id"];
+                    std::string name = "w" + std::to_string(id);
+                    float curvature = feature["properties"]["curvature"];
+                    curvature_map[name] = curvature;
+                }
+            }
+        }
+    }
     mongocxx::instance  inst{};
     mongocxx::uri       myUri("mongodb://localhost:27017");
     try {
@@ -61,18 +61,32 @@ int main(){
         mongocxx::database db = conn["osm"];
         mongocxx::collection collection = db["roadid"];
 
-        bsoncxx::builder::stream::document filter;
-        bsoncxx::builder::stream::document update;
+
         mongocxx::cursor cursor = collection.find({});
+        int count = 0;
         for (auto doc : cursor) {
+            bsoncxx::builder::stream::document filter;
+            bsoncxx::builder::stream::document update;
+            auto id_elem = doc["id"];
+            if (!id_elem || id_elem.type() != bsoncxx::type::k_string) continue;
+            std::string idString = std::string(id_elem.get_string().value);
+            auto it = curvature_map.find(idString);
+            if (it == curvature_map.end())
+                continue;
+            double curvature_value = it->second;
             auto properties_elem = doc["properties"];
-            if (properties_elem && properties_elem.type() == bsoncxx::type::k_document) {
+            if (!properties_elem || properties_elem.type() != bsoncxx::type::k_document) continue;
+            if (properties_elem)
+            {
+                filter << "_id" << doc["_id"].get_oid().value;
                 bsoncxx::document::view properties_view = properties_elem.get_document().view();
-            
-                auto id_elem = properties_view["id"];
-                if (id_elem && id_elem.type() == bsoncxx::type::k_string) {
-                    std::string id_str = std::string(id_elem.get_string().value);
-                    std::cout << "Found properties.id = " << id_str << std::endl;
+                update << "$set" << bsoncxx::builder::stream::open_document
+                    << "properties.curvature" << curvature_value
+                    << bsoncxx::builder::stream::close_document;
+                collection.update_one(filter.view(), update.view());
+                count++;
+                if (count % BATCH == 0) {
+                    std::cout << "Updated " << count << " documents." << std::endl;
                 }
             }
         }
